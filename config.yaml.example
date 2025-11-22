@@ -1,0 +1,44 @@
+# Audiobook Organizer Configuration
+# Copy this file to config.yaml and update with your paths
+
+# Directory to watch for completed audiobooks
+watch_directory: "/path/to/completed/audiobooks"
+
+# External drive paths for organizing audiobooks
+# Books are split by author's first letter: A-L goes to drive_a_l, M-Z goes to drive_m_z
+drives:
+  a_l: "/Volumes/Audiobooks_AL/Library"  # Authors A-L
+  m_z: "/Volumes/Audiobooks_MZ/Library"  # Authors M-Z
+
+# Behavior settings
+settings:
+  # What to do when a file already exists at the destination
+  # Options: "replace" (delete old, move new) or "skip" (leave new in watch folder)
+  on_duplicate: "replace"
+  
+  # How often to check for new files (seconds) when running continuously
+  check_interval: 2
+  
+  # Maximum file size to process (in MB, 0 = no limit)
+  max_file_size: 0
+  
+  # Supported audio file extensions
+  audio_extensions:
+    - ".m4b"
+    - ".m4a"
+    - ".mp3"
+    - ".mp4"
+    - ".aac"
+    - ".flac"
+    - ".ogg"
+
+# Logging settings
+logging:
+  # Log file location (use "console" for terminal only)
+  log_file: "audiobook_organizer.log"
+  
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  log_level: "INFO"
+  
+  # Show detailed metadata extraction info
+  debug_metadata: false

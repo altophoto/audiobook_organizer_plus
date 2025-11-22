@@ -1,0 +1,10 @@
+# Audiobook Organizer Requirements
+
+# YAML configuration file parsing
+PyYAML>=6.0
+
+# Audio file metadata reading
+mutagen>=1.47.0
+
+# File system event monitoring
+watchdog>=3.0.0
