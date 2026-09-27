@@ -30,6 +30,11 @@ cd audiobook-organizer
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Using uv
+uv venv
+uv pip install -r requirements.txt
+
 ```
 
 ### 2. Configure
@@ -75,6 +80,20 @@ python3 audiobook_organizer.py --config /path/to/config.yaml
    - M-Z → Drive 2
 4. **Creates** folder structure: `Author/Book Title/`
 5. **Moves** the file to the organized location
+
+## How the PLUS fork is different
+
+This repo assumes the use of program like ImAudible that automatically generates a variety of metadata files within a folder. Itg would be convenient to be able to drop the entire folder into the watchfile and maybe also keep the metadata for later use.
+
+1. The Trigger: When InAudible exports a folder into your watch directory, the script's watchdog library will see all the files being written.
+
+2. The Filter: It ignores the .cue, .nfo, and .jpg events initially, waiting specifically for the .m4b file to be created.
+
+3. The Move: Once the .m4b is finished writing, it extracts the metadata to build the Author/Book destination folder and moves the .m4b.
+
+4. The Sweep: It then looks at the source folder where the .m4b just came from. If it finds any .nfo, .cue, .jpg, .jpeg, .png, or .txt files in that same exact folder, it moves them directly over to the new Author/Book folder alongside your audio file.
+
+5. The Cleanup: If that source folder is now completely empty (because all the InAudible files were successfully moved), the script deletes the empty folder so your watch directory doesn't turn into a graveyard of empty directories.
 
 ### Example
 

@@ -3,11 +3,9 @@
 Audiobook Organizer
 Automatically organizes audiobook files into Author/Book Title folder structure
 based on metadata tags, with configurable drive splitting (e.g., A-L vs M-Z).
+Now includes support for processing InAudible subfolders and companion files (.nfo, .cue, .jpg).
 
 Perfect for use with Audiobookshelf or any audiobook library management system.
-
-Author: Community collaboration
-License: MIT
 """
 
 import os
@@ -126,35 +124,15 @@ def setup_logging(config: Config) -> logging.Logger:
 
 
 def sanitize_filename(name: str) -> str:
-    """
-    Remove or replace characters that are problematic in filenames
-    
-    Args:
-        name: Filename to sanitize
-        
-    Returns:
-        Sanitized filename
-    """
-    # Replace problematic characters
+    """Remove or replace characters that are problematic in filenames"""
     name = re.sub(r'[<>:"/\\|?*]', '_', name)
-    # Remove leading/trailing spaces and dots
     name = name.strip('. ')
     return name
 
 
 def get_metadata(file_path: str, debug: bool = False) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Extract author and book title from audio file metadata
-    
-    Args:
-        file_path: Path to the audio file
-        debug: Whether to show debug output
-        
-    Returns:
-        Tuple of (author, book_title) or (None, None) if extraction fails
-    """
+    """Extract author and book title from audio file metadata"""
     try:
-        # Read metadata directly (not using easy=True for better MP4 tag access)
         audio = MutagenFile(file_path)
         
         if audio is None:
@@ -168,31 +146,24 @@ def get_metadata(file_path: str, debug: bool = False) -> Tuple[Optional[str], Op
         # For M4B/M4A files (MP4 container)
         if isinstance(audio, MP4):
             if debug:
-                print(f"   🔍 Available tags: {list(audio.keys())[:10]}")
+                print(f"  🔍 Available tags: {list(audio.keys())[:10]}")
             
-            # Author: Try album artist first, then regular artist
             for tag in ['aART', '\xa9ART', '©ART']:
                 if tag in audio:
                     value = audio[tag]
                     if isinstance(value, list):
                         value = value[0]
                     author = str(value)
-                    if debug:
-                        print(f"   ✓ Found author in '{tag}': {author}")
                     break
             
-            # Book title: Try album first, then title
             for tag in ['\xa9alb', '©alb']:
                 if tag in audio:
                     value = audio[tag]
                     if isinstance(value, list):
                         value = value[0]
                     book_title = str(value)
-                    if debug:
-                        print(f"   ✓ Found book title in '{tag}': {book_title}")
                     break
             
-            # If no album, try title as fallback
             if not book_title:
                 for tag in ['\xa9nam', '©nam']:
                     if tag in audio:
@@ -200,25 +171,20 @@ def get_metadata(file_path: str, debug: bool = False) -> Tuple[Optional[str], Op
                         if isinstance(value, list):
                             value = value[0]
                         book_title = str(value)
-                        if debug:
-                            print(f"   ✓ Found book title in title '{tag}': {book_title}")
                         break
         else:
-            # For other formats (MP3, etc) - try using tags directly
+            # For other formats (MP3, etc)
             if hasattr(audio, 'tags') and audio.tags:
-                # Try to get album artist or artist
                 for tag_name in ['albumartist', 'artist', 'ALBUMARTIST', 'ARTIST', 'TPE2', 'TPE1']:
                     if tag_name in audio.tags:
                         author = str(audio.tags[tag_name][0] if isinstance(audio.tags[tag_name], list) else audio.tags[tag_name])
                         break
                 
-                # Try to get album
                 for tag_name in ['album', 'ALBUM', 'TALB']:
                     if tag_name in audio.tags:
                         book_title = str(audio.tags[tag_name][0] if isinstance(audio.tags[tag_name], list) else audio.tags[tag_name])
                         break
         
-        # Clean up the metadata
         if author:
             author = str(author).strip()
         if book_title:
@@ -229,55 +195,32 @@ def get_metadata(file_path: str, debug: bool = False) -> Tuple[Optional[str], Op
     except Exception as e:
         if debug:
             print(f"Error reading metadata from {file_path}: {e}")
-            import traceback
-            traceback.print_exc()
         return None, None
 
 
 def get_target_drive(author_name: str, config: Config) -> Optional[str]:
-    """
-    Determine which drive to use based on first letter of author's first name
-    
-    Args:
-        author_name: Name of the author
-        config: Configuration object
-        
-    Returns:
-        Path to target drive or None if invalid
-    """
+    """Determine which drive to use based on first letter of author's first name"""
     if not author_name:
         return None
     
-    # Get the first letter of the first name
     first_letter = author_name[0].upper()
     
-    # A-L goes to drive 1, M-Z goes to drive 2
     if 'A' <= first_letter <= 'L':
         return config.drive_a_l
     elif 'M' <= first_letter <= 'Z':
         return config.drive_m_z
     else:
-        # Numbers or special characters default to A-L drive
         return config.drive_a_l
 
 
 def organize_audiobook(file_path: str, config: Config, logger: logging.Logger) -> bool:
-    """
-    Read metadata and move audiobook to appropriate location
-    
-    Args:
-        file_path: Path to the audiobook file
-        config: Configuration object
-        logger: Logger instance
-        
-    Returns:
-        True if successful, False otherwise
-    """
+    """Read metadata, move audiobook, and grab companion files (.nfo, .cue, .jpg)"""
     logger.info(f"📚 Processing: {os.path.basename(file_path)}")
     
     # Check if it's an audio file
     if Path(file_path).suffix.lower() not in config.audio_extensions:
-        logger.info(f"⏭️  Skipping non-audio file: {file_path}")
+        # We silently return False here because watchdog will trigger on .jpg/.nfo files 
+        # and we only want to process when the actual audio file triggers it.
         return False
     
     # Get metadata
@@ -285,60 +228,85 @@ def organize_audiobook(file_path: str, config: Config, logger: logging.Logger) -
     
     if not author or not book_title:
         logger.warning(f"❌ Missing metadata - Author: {author}, Book: {book_title}")
-        logger.warning(f"   Leaving file in watch folder")
+        logger.warning(f"  Leaving file in watch folder")
         return False
     
     logger.info(f"📖 Author: {author}")
     logger.info(f"📕 Book: {book_title}")
     
-    # Determine target drive
     target_drive = get_target_drive(author, config)
     
     if not target_drive or not os.path.exists(target_drive):
         logger.error(f"❌ Target drive not mounted: {target_drive}")
         return False
     
-    logger.info(f"💾 Target drive: {target_drive}")
-    
-    # Sanitize names for filesystem
     safe_author = sanitize_filename(author)
     safe_book = sanitize_filename(book_title)
     
-    # Create folder structure: Author/Book Title/
     author_folder = os.path.join(target_drive, safe_author)
     book_folder = os.path.join(author_folder, safe_book)
     
-    # Create directories if they don't exist
     try:
         os.makedirs(book_folder, exist_ok=True)
-        logger.info(f"📁 Created/verified folder: {book_folder}")
     except Exception as e:
         logger.error(f"❌ Error creating folder {book_folder}: {e}")
         return False
     
-    # Move the file
     filename = os.path.basename(file_path)
     destination = os.path.join(book_folder, filename)
+    source_dir = os.path.dirname(file_path)
     
     try:
-        # Check if file already exists at destination
         if os.path.exists(destination):
             logger.warning(f"⚠️  File already exists at destination: {destination}")
             
             if config.on_duplicate == 'replace':
-                logger.info(f"   Deleting old version and replacing with new...")
+                logger.info(f"  Deleting old version and replacing with new...")
                 try:
                     os.remove(destination)
-                    logger.info(f"   🗑️  Old version deleted")
                 except Exception as e:
-                    logger.error(f"   ❌ Error deleting old file: {e}")
+                    logger.error(f"  ❌ Error deleting old file: {e}")
                     return False
-            else:  # skip
-                logger.info(f"   Skipping (on_duplicate='skip')")
+            else:
+                logger.info(f"  Skipping (on_duplicate='skip')")
                 return False
         
-        logger.info(f"🚚 Moving to: {destination}")
+        logger.info(f"🚚 Moving audio file to: {destination}")
         shutil.move(file_path, destination)
+        
+        # --- NEW: Move companion files (.nfo, .cue, .jpg, .png, .txt) ---
+        companion_extensions = {'.nfo', '.cue', '.jpg', '.jpeg', '.png', '.txt'}
+        
+        for comp_file in os.listdir(source_dir):
+            comp_path = os.path.join(source_dir, comp_file)
+            
+            if os.path.isfile(comp_path):
+                comp_ext = Path(comp_path).suffix.lower()
+                if comp_ext in companion_extensions:
+                    comp_dest = os.path.join(book_folder, comp_file)
+                    
+                    try:
+                        if os.path.exists(comp_dest):
+                            if config.on_duplicate == 'replace':
+                                os.remove(comp_dest)
+                            else:
+                                continue
+                                
+                        shutil.move(comp_path, comp_dest)
+                        logger.info(f"  📎 Moved companion file: {comp_file}")
+                    except Exception as e:
+                        logger.error(f"  ❌ Error moving companion {comp_file}: {e}")
+
+        # --- NEW: Clean up empty folder if it wasn't the root watch directory ---
+        # Normalize paths to ensure accurate comparison across OS types
+        if os.path.normpath(source_dir) != os.path.normpath(config.watch_directory):
+            if not os.listdir(source_dir):  # If folder is now empty
+                try:
+                    os.rmdir(source_dir)
+                    logger.info(f"  🗑️ Removed empty folder: {os.path.basename(source_dir)}")
+                except Exception as e:
+                    logger.debug(f"Could not remove folder {source_dir}: {e}")
+                    
         logger.info(f"✅ Successfully organized!")
         return True
         
@@ -356,59 +324,54 @@ class AudiobookHandler(FileSystemEventHandler):
         self.processed_files = set()
     
     def on_created(self, event):
-        """Called when a file is created"""
         if event.is_directory:
             return
-        
+            
         file_path = event.src_path
         
-        # Avoid processing the same file multiple times
         if file_path in self.processed_files:
             return
-        
-        # Wait a moment to ensure file is fully written
+            
         time.sleep(self.config.check_interval)
         
-        # Check if file still exists (in case it was quickly moved)
         if not os.path.exists(file_path):
             return
-        
-        # Mark as processed
+            
         self.processed_files.add(file_path)
-        
-        # Organize the audiobook
         organize_audiobook(file_path, self.config, self.logger)
 
 
 def process_existing_files(config: Config, logger: logging.Logger):
-    """Process any files that already exist in the watch folder"""
+    """Process any files that already exist in the watch folder and subfolders"""
     logger.info(f"🔍 Checking for existing files in {config.watch_directory}...")
     
     if not os.path.exists(config.watch_directory):
         logger.warning(f"⚠️  Watch folder doesn't exist: {config.watch_directory}")
         return
     
-    files = [f for f in os.listdir(config.watch_directory) 
-             if os.path.isfile(os.path.join(config.watch_directory, f))]
+    # --- NEW: Use os.walk to find audio files inside subfolders too ---
+    audio_files = []
+    for root, _, files in os.walk(config.watch_directory):
+        for f in files:
+            file_path = os.path.join(root, f)
+            if Path(file_path).suffix.lower() in config.audio_extensions:
+                audio_files.append(file_path)
     
-    if not files:
-        logger.info("   No existing files found")
+    if not audio_files:
+        logger.info("  No existing audio files found")
         return
-    
-    logger.info(f"   Found {len(files)} file(s) to process")
+        
+    logger.info(f"  Found {len(audio_files)} audio file(s) to process")
     
     success_count = 0
-    for filename in files:
-        file_path = os.path.join(config.watch_directory, filename)
+    for file_path in audio_files:
         if organize_audiobook(file_path, config, logger):
             success_count += 1
-    
-    logger.info(f"✅ Processed {success_count}/{len(files)} files")
+            
+    logger.info(f"✅ Processed {success_count}/{len(audio_files)} files")
 
 
 def main():
-    """Main entry point"""
-    # Parse command line arguments
     import argparse
     parser = argparse.ArgumentParser(
         description='Audiobook Organizer - Organize audiobooks by Author/Book Title'
@@ -425,7 +388,6 @@ def main():
     )
     args = parser.parse_args()
     
-    # Load configuration
     config = Config(args.config)
     logger = setup_logging(config)
     
@@ -437,27 +399,25 @@ def main():
     print(f"📚 M-Z Authors → {config.drive_m_z}")
     print(f"🔄 On duplicate: {config.on_duplicate}")
     
-    # Check if watch folder exists
     if not os.path.exists(config.watch_directory):
         logger.error(f"❌ Watch folder doesn't exist: {config.watch_directory}")
         return
-    
-    # Process existing files first
+        
     process_existing_files(config, logger)
     
-    # If --once flag is set, exit after processing existing files
     if args.once:
         logger.info("✅ One-time processing complete")
         return
-    
-    # Set up file watcher
+        
     print("\nPress Ctrl+C to stop\n")
     event_handler = AudiobookHandler(config, logger)
     observer = Observer()
-    observer.schedule(event_handler, config.watch_directory, recursive=False)
+    
+    # --- NEW: recursive=True allows watching subfolders InAudible creates ---
+    observer.schedule(event_handler, config.watch_directory, recursive=True)
     observer.start()
     
-    logger.info("👀 Now watching for new files...")
+    logger.info("👀 Now watching for new files and folders...")
     
     try:
         while True:
@@ -465,7 +425,7 @@ def main():
     except KeyboardInterrupt:
         logger.info("\n🛑 Stopping audiobook organizer...")
         observer.stop()
-    
+        
     observer.join()
     logger.info("✅ Stopped")
 
