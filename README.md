@@ -83,7 +83,7 @@ python3 audiobook_organizer.py --config /path/to/config.yaml
 
 ## How the PLUS fork is different
 
-This repo assumes the use of program like ImAudible that automatically generates a variety of metadata files within a folder. Itg would be convenient to be able to drop the entire folder into the watchfile and maybe also keep the metadata for later use.
+This repo assumes the use of program like InAudible that automatically generates a variety of metadata files within a folder. It would be convenient to be able to drop an entire InAudible-generated folder into the watch-file and there are people for whom it is useful to keep the metadata for later use.
 
 1. The Trigger: When InAudible exports a folder into your watch directory, the script's watchdog library will see all the files being written.
 
@@ -95,7 +95,7 @@ This repo assumes the use of program like ImAudible that automatically generates
 
 5. The Cleanup: If that source folder is now completely empty (because all the InAudible files were successfully moved), the script deletes the empty folder so your watch directory doesn't turn into a graveyard of empty directories.
 
-### Example
+### Example (TODO: EDIT THESE EXAMPLES TO CONFORM WITH THE PLUS CHANGES ....)
 
 ```
 Input file: /completed/audiobook.m4b
