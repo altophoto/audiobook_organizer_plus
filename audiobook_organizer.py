@@ -249,17 +249,38 @@ def organize_audiobook(file_path: str, config: Config, logger: logging.Logger) -
 
 
 class AudiobookHandler(FileSystemEventHandler):
+    """Handle new files appearing in the watched folder"""
+    
     def __init__(self, config: Config, logger: logging.Logger):
         self.config = config
         self.logger = logger
         self.processed_files = set()
     
     def on_created(self, event):
-        if event.is_directory: return
-        file_path = event.src_path
-        if file_path in self.processed_files: return
+        if event.is_directory:
+            return
+        self._process_file(event.src_path)
+
+    def on_moved(self, event):
+        # This catches when a temporary file is renamed to the final .m4b
+        if event.is_directory:
+            return
+        self._process_file(event.dest_path)
+        
+    def _process_file(self, file_path):
+        # Ignore temporary files used during audio extraction/muxing
+        filename = os.path.basename(file_path)
+        if filename.startswith('temp') or filename.endswith('.tmp') or filename.endswith('.ff.txt'):
+            return
+
+        if file_path in self.processed_files:
+            return
+            
         time.sleep(self.config.check_interval)
-        if not os.path.exists(file_path): return
+        
+        if not os.path.exists(file_path):
+            return
+            
         self.processed_files.add(file_path)
         organize_audiobook(file_path, self.config, self.logger)
 

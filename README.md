@@ -34,6 +34,7 @@ pip install -r requirements.txt
 # Using uv
 uv venv
 uv pip install -r requirements.txt
+uv run python audiobook_organizer.py 
 
 ```
 
