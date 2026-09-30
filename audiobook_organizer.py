@@ -15,6 +15,7 @@ import sys
 import logging
 from pathlib import Path
 from typing import Optional, Tuple
+from html_builder import get_all_books, build_html
 
 # Import our new database module (ensure database.py is in the same folder!)
 import database
@@ -235,6 +236,20 @@ def organize_audiobook(file_path: str, config: Config, logger: logging.Logger) -
     # Database Entry
     if database.add_book(config.db_file, author, book_title, destination, book_folder, cover_path):
         logger.info(f"  💾 Saved to SQLite database")
+       # Update the HTML index live
+        try:
+            # 1. Define where the database file is located using your config
+            db_file = config.config.get('settings', {}).get('db_file', 'library.db')
+            
+            # 2. Fetch the books and build the HTML
+            books_data = get_all_books(db_file)
+            output_path = config.config.get('settings', {}).get('index_file', 'library_vue.html')
+            
+            if books_data:
+                build_html(books_data, output_path)
+                logger.info("  🌐 Updated Vue.js library interface")
+        except Exception as e:
+            logger.error(f"  ❌ Error updating HTML interface: {e}")
 
     # Clean up empty folder
     if os.path.normpath(source_dir) != os.path.normpath(config.watch_directory):

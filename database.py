@@ -78,3 +78,29 @@ def get_all_books(db_path: str):
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM books ORDER BY author, title')
         return cursor.fetchall()
+
+def get_all_file_paths(db_file: str) -> set:
+    """Returns a mathematical Set of all file paths currently in the database."""
+    import sqlite3
+    import os
+    
+    # We use os.path.normpath to ensure slashes face the right way for Windows
+    try:
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM books")
+        # Extract the first column from each row and normalize the path
+        paths = {os.path.normpath(row[0]) for row in cursor.fetchall()}
+        conn.close()
+        return paths
+    except sqlite3.OperationalError:
+        return set()
+
+def remove_book_by_path(db_file: str, file_path: str):
+    """Deletes a book record from the database if the physical file is missing."""
+    import sqlite3
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM books WHERE file_path = ?", (file_path,))
+    conn.commit()
+    conn.close()
