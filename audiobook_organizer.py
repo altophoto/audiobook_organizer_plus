@@ -20,9 +20,6 @@ from pathlib import Path
 from typing import Optional, Tuple
 from html_builder import get_all_books, build_html
 
-# Import our new database module (ensure database.py is in the same folder!)
-import database
-
 try:
     import yaml
     from mutagen import File as MutagenFile
@@ -38,7 +35,7 @@ except ImportError as e:
 
 class Config:
     """Configuration manager for the audiobook organizer"""
-        
+    
     def __init__(self, config_file='config.yaml'):
         self.config_file = config_file
         self.config = self.load_config()
@@ -100,14 +97,6 @@ class Config:
         return self.config.get('logging', {}).get('debug_metadata', False)
         
     @property
-    def db_file(self):
-        # Allow defining database location, default to library.db in the working directory
-        path = self.config.get('settings', {}).get('db_file', 'library.db')
-        if os.path.isdir(path) or path.endswith('/') or path.endswith('\\'):
-            return os.path.join(path, 'library.db')
-        return path
-
-    @property
     def index_file(self):
         path = self.config.get('settings', {}).get('index_file', 'library_index.md')
         # Smart detection: if you just provided a folder path in config.yaml, auto-append the filename
@@ -117,28 +106,37 @@ class Config:
 
 
 def setup_logging(config: Config) -> logging.Logger:
+    """Set up logging configuration"""
     logger = logging.getLogger('audiobook_organizer')
     logger.setLevel(getattr(logging, config.log_level))
     
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
-    console_format = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    console_format = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
     console_handler.setFormatter(console_format)
     logger.addHandler(console_handler)
     
     if config.log_file != 'console':
         file_handler = logging.FileHandler(config.log_file, encoding='utf-8')
         file_handler.setLevel(logging.DEBUG)
-        file_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_format = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
         file_handler.setFormatter(file_format)
         logger.addHandler(file_handler)
     
     return logger
 
+
 def sanitize_filename(name: str) -> str:
+    """Remove or replace characters that are problematic in filenames"""
     name = re.sub(r'[<>:"/\\|?*]', '_', name)
     name = name.strip('. ')
     return name
+
 
 def update_library_index(author: str, book_title: str, folder_path: str, file_path: str, index_file: str):
     """
@@ -211,32 +209,47 @@ def update_library_index(author: str, book_title: str, folder_path: str, file_pa
         with open(html_file, 'w', encoding='utf-8') as f:
             f.write(content)
 
+
 def get_metadata(file_path: str, debug: bool = False) -> Tuple[Optional[str], Optional[str]]:
+    """Extract author and book title from audio file metadata"""
     try:
         audio = MutagenFile(file_path)
+        
         if audio is None:
+            if debug:
+                print(f"Could not read metadata from {file_path}")
             return None, None
         
-        author, book_title = None, None
+        author = None
+        book_title = None
         
         if isinstance(audio, MP4):
+            if debug:
+                print(f"  🔍 Available tags: {list(audio.keys())[:10]}")
+            
             for tag in ['aART', '\xa9ART', '©ART']:
                 if tag in audio:
                     value = audio[tag]
-                    author = str(value[0] if isinstance(value, list) else value)
+                    if isinstance(value, list):
+                        value = value[0]
+                    author = str(value)
                     break
             
             for tag in ['\xa9alb', '©alb']:
                 if tag in audio:
                     value = audio[tag]
-                    book_title = str(value[0] if isinstance(value, list) else value)
+                    if isinstance(value, list):
+                        value = value[0]
+                    book_title = str(value)
                     break
             
             if not book_title:
                 for tag in ['\xa9nam', '©nam']:
                     if tag in audio:
                         value = audio[tag]
-                        book_title = str(value[0] if isinstance(value, list) else value)
+                        if isinstance(value, list):
+                            value = value[0]
+                        book_title = str(value)
                         break
         else:
             if hasattr(audio, 'tags') and audio.tags:
@@ -250,10 +263,17 @@ def get_metadata(file_path: str, debug: bool = False) -> Tuple[Optional[str], Op
                         book_title = str(audio.tags[tag_name][0] if isinstance(audio.tags[tag_name], list) else audio.tags[tag_name])
                         break
         
-        return author.strip() if author else None, book_title.strip() if book_title else None
+        if author:
+            author = str(author).strip()
+        if book_title:
+            book_title = str(book_title).strip()
+            
+        return author, book_title, needs_tagging
         
-    except Exception:
-        return None, None
+    except Exception as e:
+        if debug:
+            print(f"Error reading metadata from {file_path}: {e}")
+        return None, None, False
 
 
 def get_target_drive(author_name: str, config: Config) -> Optional[str]:
@@ -278,15 +298,19 @@ def organize_audiobook(file_path: str, config: Config, logger: logging.Logger) -
     if Path(file_path).suffix.lower() not in config.audio_extensions:
         return False
     
-    author, book_title = get_metadata(file_path, debug=config.debug_metadata)
+    # 1. Catch ALL THREE variables!
+    author, book_title, needs_tagging = get_metadata(file_path, debug=config.debug_metadata)
     
     if not author or not book_title:
-        logger.warning(f"❌ Missing metadata - Author: {author}, Book: {book_title}")
-        logger.warning(f"  Leaving file in watch folder")
+        logger.warning(f"❌ Missing metadata and couldn't parse filename for: {file_path}")
         return False
     
     logger.info(f"📖 Author: {author}")
     logger.info(f"📕 Book: {book_title}")
+    
+    # 2. Trigger the tag writer if we had to guess from the filename
+    if needs_tagging:
+        write_metadata(file_path, author, book_title, logger)
     
     target_drive = get_target_drive(author, config)
     
@@ -460,9 +484,6 @@ def main():
     
     config = Config(args.config)
     logger = setup_logging(config)
-
-    # Initialize the Database at startup!
-    database.init_db(config.db_file)
     
     print("=" * 70)
     print("🎧 AUDIOBOOK ORGANIZER")
