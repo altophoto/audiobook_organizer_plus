@@ -1,106 +1,74 @@
 """
-Audiobook Database Manager
-Handles all SQLite connections, table creation, and queries for the audiobook library.
+Database Management Module
+Handles all SQLite interactions for the Audiobook Organizer.
 """
 
 import sqlite3
 import os
-from datetime import datetime
-import logging
 
-logger = logging.getLogger('audiobook_organizer.database')
+def init_db(db_file: str):
+    """Initializes the SQLite database and creates the books table if it doesn't exist."""
+    # Ensure the directory exists if the database is buried in a folder
+    os.makedirs(os.path.dirname(os.path.abspath(db_file)), exist_ok=True)
+    
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS books (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            author TEXT,
+            title TEXT,
+            folder_path TEXT,
+            file_path TEXT UNIQUE,
+            cover_path TEXT,
+            date_added DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-def get_connection(db_path: str):
-    """
-    Creates a connection to the SQLite database.
-    If the file doesn't exist, SQLite will automatically create it.
-    """
-    # row_factory allows us to access columns by name (e.g., row['author']) later
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
 
-def init_db(db_path: str):
-    """
-    Initializes the database schema.
-    Creates the 'books' table if it doesn't already exist.
-    """
-    # We use a context manager (with) to ensure the connection closes automatically
-    with get_connection(db_path) as conn:
-        cursor = conn.cursor()
-        
-        # We use IF NOT EXISTS so this safely runs every time the script starts
-        # file_path is UNIQUE to prevent duplicate entries if a file is re-processed
+def insert_book(db_file: str, author: str, title: str, folder_path: str, file_path: str, cover_path: str):
+    """Inserts a new book into the database, or updates it if it already exists."""
+    init_db(db_file)  # Always ensure the table exists before inserting
+    
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    try:
+        # INSERT OR REPLACE ensures we don't get errors if a book is scanned twice
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS books (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                author TEXT NOT NULL,
-                title TEXT NOT NULL,
-                file_path TEXT UNIQUE NOT NULL,
-                folder_path TEXT NOT NULL,
-                cover_path TEXT,
-                date_added DATETIME NOT NULL
-            )
-        ''')
-        
+            INSERT OR REPLACE INTO books (author, title, folder_path, file_path, cover_path)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (author, title, folder_path, file_path, cover_path))
         conn.commit()
-        logger.debug(f"Database initialized at {os.path.abspath(db_path)}")
+    except sqlite3.Error as e:
+        print(f"❌ SQLite Insert Error: {e}")
+    finally:
+        conn.close()
 
-def add_book(db_path: str, author: str, title: str, file_path: str, folder_path: str, cover_path: str = None):
-    """
-    Inserts a new book into the database, or updates it if the file path already exists.
-    """
-    with get_connection(db_path) as conn:
-        cursor = conn.cursor()
-        date_added = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        try:
-            # We use INSERT OR REPLACE. If the file_path already exists (because it's UNIQUE),
-            # it updates the row instead of throwing an error.
-            # Using '?' parameterization protects against SQL injection and handles weird characters in titles.
-            cursor.execute('''
-                INSERT OR REPLACE INTO books 
-                (author, title, file_path, folder_path, cover_path, date_added)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (author, title, file_path, folder_path, cover_path, date_added))
-            
-            conn.commit()
-            return True
-        except sqlite3.Error as e:
-            logger.error(f"Database error adding book {title}: {e}")
-            return False
-
-def get_all_books(db_path: str):
-    """
-    Retrieves all books from the database. (We will use this in Phase 3 for the HTML builder).
-    """
-    with get_connection(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM books ORDER BY author, title')
-        return cursor.fetchall()
 
 def get_all_file_paths(db_file: str) -> set:
     """Returns a mathematical Set of all file paths currently in the database."""
-    import sqlite3
-    import os
-    
-    # We use os.path.normpath to ensure slashes face the right way for Windows
     try:
         conn = sqlite3.connect(db_file)
         cursor = conn.cursor()
         cursor.execute("SELECT file_path FROM books")
-        # Extract the first column from each row and normalize the path
+        # Extract the first column from each row and normalize the path for Windows
         paths = {os.path.normpath(row[0]) for row in cursor.fetchall()}
         conn.close()
         return paths
     except sqlite3.OperationalError:
+        # If the table doesn't exist yet, return an empty set
         return set()
+
 
 def remove_book_by_path(db_file: str, file_path: str):
     """Deletes a book record from the database if the physical file is missing."""
-    import sqlite3
-    conn = sqlite3.connect(db_file)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM books WHERE file_path = ?", (file_path,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM books WHERE file_path = ?", (file_path,))
+        conn.commit()
+        conn.close()
+    except sqlite3.Error as e:
+        print(f"❌ SQLite Delete Error: {e}")

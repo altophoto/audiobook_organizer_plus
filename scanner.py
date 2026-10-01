@@ -6,12 +6,31 @@ adding untracked files and removing deleted records.
 """
 
 import os
+import time
+import signal
+import sys
 from pathlib import Path
 from html_builder import get_all_books, build_html
 
 # Import tools from our existing modules
 from audiobook_organizer import Config, setup_logging, get_metadata
 from database import insert_book, get_all_file_paths, remove_book_by_path
+
+# Global flag for graceful shutdown
+stop_requested = False
+
+def request_shutdown(sig, frame):
+    """Catches Ctrl+C and politely asks the loop to stop."""
+    global stop_requested
+    if stop_requested:
+        print("\n🚨 Force quit detected! Shutting down immediately!")
+        sys.exit(1)
+    
+    print("\n⚠️ Graceful shutdown requested! Finishing current file... (Press Ctrl+C again to force quit)")
+    stop_requested = True
+
+# Hook the interceptor to the Ctrl+C command (SIGINT)
+signal.signal(signal.SIGINT, request_shutdown)
 
 def scan_library(config: Config, logger):
     db_file = config.config.get('settings', {}).get('db_file', 'library.db')
@@ -49,27 +68,51 @@ def scan_library(config: Config, logger):
     
     # 3. Process new additions (On Disk, but not in DB)
     if missing_from_db:
-        logger.info(f"➕ Found {len(missing_from_db)} files missing from database. Adding them...")
-        for path in missing_from_db:
-            author, book_title = get_metadata(path, debug=False)
+        total_missing = len(missing_from_db)
+        logger.info(f"➕ Found {total_missing} files missing from database. Rebuilding...")
+        
+        start_time = time.time()  # ⏱️ Start the stopwatch
+        
+        # enumerate() gives us a counter (index) starting at 1
+        for index, path in enumerate(missing_from_db, 1):
+            # --- THE SHUTDOWN CHECKPOINT ---
+            if stop_requested:
+                logger.warning(f"🛑 Processing halted early at file {index-1}. Saving current progress...")
+                break  # This breaks out of the loop safely
+                
+            # Ensure we unpack all THREE variables from our newly upgraded metadata tool!
+            author, book_title, needs_tagging = get_metadata(path, debug=False)
             
             if author and book_title:
                 source_dir = os.path.dirname(path)
                 cover_path = None
                 
-                # Look for cover art in the same folder
+                # Look for cover art
                 for f in os.listdir(source_dir):
                     if f.lower().endswith(('.jpg', '.jpeg', '.png')):
                         cover_path = os.path.join(source_dir, f)
                         break
                         
-                insert_book(db_file, author, book_title, source_dir, path, cover_path)
-                logger.info(f"   💾 Added: {book_title} by {author}")
+                insert_book(db_file, author, book_title, source_dir, path, cover_path or "")
+                
+                # --- TIMER & ETA MATH ---
+                elapsed_time = time.time() - start_time
+                # Files divided by seconds
+                files_per_second = index / elapsed_time if elapsed_time > 0 else 0
+                remaining_files = total_missing - index
+                # Remaining files divided by speed equals remaining seconds
+                eta_seconds = int(remaining_files / files_per_second) if files_per_second > 0 else 0
+                
+                # Convert raw seconds into neat Minutes:Seconds
+                mins, secs = divmod(eta_seconds, 60)
+                
+                # We slice the book title [:25] so super long titles don't ruin the console layout
+                logger.info(f"   💾 [{index}/{total_missing}] Added: {book_title[:25]:<25} | Rate: {files_per_second:.1f} f/s | ETA: {mins:02d}m:{secs:02d}s")
             else:
                 logger.warning(f"   ❌ Could not read metadata for: {path}")
     else:
         logger.info("➕ No new untracked files found.")
-        
+    
     # 4. Process deletions (In DB, but not on Disk)
     if missing_from_disk:
         logger.info(f"➖ Found {len(missing_from_disk)} ghost records in database. Removing them...")

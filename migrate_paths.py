@@ -14,10 +14,12 @@ def main():
     # 1. EDIT THESE TWO LINES WITH YOUR ACTUAL PATHS
     # ---------------------------------------------------------
     # Example old path (from your previous logs)
-    old_path = "C:/sebdev/books_processed/Volumes/"
+    # C:/sebdev/GoogleDrive/books_processed
+    old_path = "C:/sebdev/GoogleDrive/books_processed/"
     
     # Example new Google Drive path (update this to match your new config.yaml!)
-    new_path = "G:/My Drive/Audiobooks/Volumes" 
+    # G:\My Drive\Audiobooks\Volumes
+    new_path = "G:/My Drive/Audiobooks/Volumes/"
     # ---------------------------------------------------------
 
     # Normalize paths to match Windows slashes exactly how they are stored in SQLite

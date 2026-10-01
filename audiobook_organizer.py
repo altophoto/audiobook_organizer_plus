@@ -211,51 +211,100 @@ def update_library_index(author: str, book_title: str, folder_path: str, file_pa
         with open(html_file, 'w', encoding='utf-8') as f:
             f.write(content)
 
-def get_metadata(file_path: str, debug: bool = False) -> Tuple[Optional[str], Optional[str]]:
+def get_metadata(file_path: str, debug: bool = False) -> Tuple[Optional[str], Optional[str], bool]:
+    """Extract metadata from file, falling back to filename parsing if missing."""
+    needs_tagging = False
+    author = None
+    book_title = None
+    
+    try:
+        audio = MutagenFile(file_path)
+        
+        if audio is not None:
+            # 1. Try to read native MP4 tags
+            if isinstance(audio, MP4):
+                for tag in ['aART', '\xa9ART', '©ART']:
+                    if tag in audio:
+                        author = str(audio[tag][0] if isinstance(audio[tag], list) else audio[tag])
+                        break
+                for tag in ['\xa9alb', '©alb', '\xa9nam', '©nam']:
+                    if tag in audio:
+                        book_title = str(audio[tag][0] if isinstance(audio[tag], list) else audio[tag])
+                        break
+            
+            # 2. Try to read other tags (MP3, FLAC)
+            elif hasattr(audio, 'tags') and audio.tags:
+                for tag in ['albumartist', 'artist', 'ALBUMARTIST', 'ARTIST', 'TPE2', 'TPE1']:
+                    if tag in audio.tags:
+                        author = str(audio.tags[tag][0] if isinstance(audio.tags[tag], list) else audio.tags[tag])
+                        break
+                for tag in ['album', 'ALBUM', 'TALB']:
+                    if tag in audio.tags:
+                        book_title = str(audio.tags[tag][0] if isinstance(audio.tags[tag], list) else audio.tags[tag])
+                        break
+
+        # Clean up existing tags
+        if author: author = author.strip()
+        if book_title: book_title = book_title.strip()
+
+        # 3. FILENAME FALLBACK: If we are missing data, parse the filename
+        if not author or not book_title:
+            filename = Path(file_path).stem  # Gets the name without the extension
+            clean_name = filename.replace('_', ' ')
+            
+            # Look for "Author - Title" pattern
+            if " - " in clean_name:
+                parts = clean_name.split(" - ", 1)
+                if not author: author = parts[0].strip()
+                if not book_title: book_title = parts[1].strip()
+            elif "-" in clean_name:
+                parts = clean_name.split("-", 1)
+                if not author: author = parts[0].strip()
+                if not book_title: book_title = parts[1].strip()
+            else:
+                # Absolute fallback if there are no hyphens
+                if not book_title: book_title = clean_name.strip()
+                if not author: author = "Unknown Author"
+                
+            # Flag this file so the script knows it needs permanent fixing
+            needs_tagging = True
+            
+        return author, book_title, needs_tagging
+        
+    except Exception as e:
+        if debug: print(f"Error reading metadata: {e}")
+        return None, None, False
+
+def write_metadata(file_path: str, author: str, book_title: str, logger: logging.Logger) -> bool:
+    """Permanently burn author and title tags into the audio file."""
     try:
         audio = MutagenFile(file_path)
         if audio is None:
-            return None, None
-        
-        author, book_title = None, None
-        
+            return False
+            
         if isinstance(audio, MP4):
-            for tag in ['aART', '\xa9ART', '©ART']:
-                if tag in audio:
-                    value = audio[tag]
-                    author = str(value[0] if isinstance(value, list) else value)
-                    break
+            audio['\xa9ART'] = author  # Artist
+            audio['aART'] = author     # Album Artist (crucial for Apple devices)
+            audio['\xa9alb'] = book_title # Album/Book Title
+            audio.save()
+            logger.info(f"   🏷️ Burned MP4 tags -> Author: {author} | Title: {book_title}")
+            return True
             
-            for tag in ['\xa9alb', '©alb']:
-                if tag in audio:
-                    value = audio[tag]
-                    book_title = str(value[0] if isinstance(value, list) else value)
-                    break
+        elif file_path.lower().endswith('.mp3'):
+            from mutagen.easyid3 import EasyID3
+            tags = EasyID3(file_path)
+            tags['artist'] = author
+            tags['albumartist'] = author
+            tags['album'] = book_title
+            tags.save()
+            logger.info(f"   🏷️ Burned MP3 tags -> Author: {author} | Title: {book_title}")
+            return True
             
-            if not book_title:
-                for tag in ['\xa9nam', '©nam']:
-                    if tag in audio:
-                        value = audio[tag]
-                        book_title = str(value[0] if isinstance(value, list) else value)
-                        break
-        else:
-            if hasattr(audio, 'tags') and audio.tags:
-                for tag_name in ['albumartist', 'artist', 'ALBUMARTIST', 'ARTIST', 'TPE2', 'TPE1']:
-                    if tag_name in audio.tags:
-                        author = str(audio.tags[tag_name][0] if isinstance(audio.tags[tag_name], list) else audio.tags[tag_name])
-                        break
-                
-                for tag_name in ['album', 'ALBUM', 'TALB']:
-                    if tag_name in audio.tags:
-                        book_title = str(audio.tags[tag_name][0] if isinstance(audio.tags[tag_name], list) else audio.tags[tag_name])
-                        break
-        
-        return author.strip() if author else None, book_title.strip() if book_title else None
-        
-    except Exception:
-        return None, None
-
-
+        return False
+    except Exception as e:
+        logger.error(f"   ❌ Failed to write tags to {os.path.basename(file_path)}: {e}")
+        return False
+    
 def get_target_drive(author_name: str, config: Config) -> Optional[str]:
     """Determine which drive to use based on first letter of author's first name"""
     if not author_name:
@@ -270,23 +319,79 @@ def get_target_drive(author_name: str, config: Config) -> Optional[str]:
     else:
         return config.drive_a_l
 
+def safe_sweep(source_dir: str, destination_dir: str, logger) -> str:
+    """Safely sweeps companion files and deletes the folder, ignoring race conditions."""
+    import shutil
+    import os
+    allowed_companions = ('.jpg', '.jpeg', '.png', '.nfo', '.txt', '.cue')
+    cover_dest = None  
+    
+    try:
+        if not os.path.exists(source_dir):
+            return ""
+            
+        for comp_file in os.listdir(source_dir):
+            if comp_file.lower().endswith(allowed_companions):
+                companion_src = os.path.join(source_dir, comp_file)
+                companion_dest = os.path.join(destination_dir, comp_file)
+                
+                # Save path if it's an image
+                if comp_file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    cover_dest = companion_dest
+                    
+                try:
+                    if not os.path.exists(companion_dest):
+                        shutil.move(companion_src, companion_dest)
+                        logger.info(f"   🖼️ Moved companion file: {comp_file}")
+                    else:
+                        os.remove(companion_src)
+                except Exception as e:
+                    logger.error(f"   ❌ Failed to move companion {comp_file}: {e}")
 
-def organize_audiobook(file_path: str, config: Config, logger: logging.Logger) -> bool:
-    """Read metadata, move audiobook, grab companion files, and update index."""
+        # Delete the original folder if empty
+        if not os.listdir(source_dir):
+            os.rmdir(source_dir)
+            logger.info(f"   🧹 Cleaned up empty source folder: {os.path.basename(source_dir)}")
+            
+    except FileNotFoundError:
+        pass # Safely ignore Google Drive vanishing act
+    except Exception as e:
+        logger.warning(f"   ⚠️ Minor error while sweeping folder: {e}")
+        
+    return cover_dest or ""
+
+import re
+
+def sanitize_text(text: str) -> str:
+    """Removes characters that Windows strictly forbids in folder names."""
+    if not text: return "Unknown"
+    return re.sub(r'[\\/*?:"<>|]', "", text).strip()
+
+def organize_audiobook(file_path: str, config, logger) -> bool:
+    # 1. 🛑 THE FRONT DOOR BOUNCER: Ignore companion files entirely!
+    allowed_audio = ('.m4b', '.mp3', '.m4a', '.flac')
+    if not file_path.lower().endswith(allowed_audio):
+        return False  # Silently skip images and text files
+        
     logger.info(f"📚 Processing: {os.path.basename(file_path)}")
     
-    if Path(file_path).suffix.lower() not in config.audio_extensions:
-        return False
-    
-    author, book_title = get_metadata(file_path, debug=config.debug_metadata)
+    # 2. Get metadata
+    author, book_title, needs_tagging = get_metadata(file_path, debug=config.debug_metadata)
     
     if not author or not book_title:
-        logger.warning(f"❌ Missing metadata - Author: {author}, Book: {book_title}")
-        logger.warning(f"  Leaving file in watch folder")
+        logger.warning(f"❌ Missing metadata and couldn't parse filename for: {file_path}")
         return False
+        
+    # 3. 🧼 SANITIZE NAMES FOR WINDOWS (Removes colons, question marks, etc.)
+    author = sanitize_text(author)
+    book_title = sanitize_text(book_title)
     
     logger.info(f"📖 Author: {author}")
     logger.info(f"📕 Book: {book_title}")
+    
+    # 4. Trigger the tag writer if we had to guess from the filename
+    if needs_tagging:
+        write_metadata(file_path, author, book_title, logger)
     
     target_drive = get_target_drive(author, config)
     
@@ -297,106 +402,94 @@ def organize_audiobook(file_path: str, config: Config, logger: logging.Logger) -
     safe_author = sanitize_filename(author)
     safe_book = sanitize_filename(book_title)
     
-    author_folder = os.path.join(target_drive, safe_author)
-    book_folder = os.path.join(author_folder, safe_book)
+    # Determine the exact destination paths using the safe names!
+    destination_dir = os.path.join(target_drive, safe_author, safe_book)
+    destination_file = os.path.join(destination_dir, os.path.basename(file_path))
     
+    # 5. Ensure the destination folder exists
     try:
-        os.makedirs(book_folder, exist_ok=True)
+        os.makedirs(destination_dir, exist_ok=True)
     except Exception as e:
-        logger.error(f"❌ Error creating folder {book_folder}: {e}")
+        logger.error(f"   ❌ Failed to create directory: {e}")
         return False
     
-    filename = os.path.basename(file_path)
-    destination = os.path.join(book_folder, filename)
+    import shutil
+    import time
+    from database import insert_book  # We borrow the tool from database.py!
+    
+    # ⏱️ Start a mini-stopwatch for this specific file
+    start_time = time.time()
+    
+    # 6. Move the primary audio file
+    try:
+        shutil.move(file_path, destination_file)
+        logger.info(f"   🚚 Moved audio to: {destination_file}")
+    except Exception as e:
+        logger.error(f"   ❌ Failed to move audio file: {e}")
+        return False
+
+    # 7. Call the Janitor to safely sweep the folder
     source_dir = os.path.dirname(file_path)
-    
+    cover_dest = safe_sweep(source_dir, destination_dir, logger)
+
+    # 8. Save the final locations to the SQLite database
+    db_file = config.config.get('settings', {}).get('db_file', 'library.db')
+    insert_book(db_file, author, book_title, destination_dir, destination_file, cover_dest or "")
+    logger.info("   💾 Saved to SQLite database")
+
+    # 9. Update ALL Index Files (Markdown, Legacy HTML, and Vue.js HTML)
     try:
-        if os.path.exists(destination):
-            logger.warning(f"⚠️  File already exists at destination: {destination}")
+        # 9A. Restore the original Markdown and embedded HTML builder
+        update_library_index(author, book_title, destination_dir, destination_file, config.index_file)
+        
+        # 9B. Update the new Vue.js database interface
+        db_file = config.config.get('settings', {}).get('db_file', 'library.db')
+        books_data = get_all_books(db_file)
+        
+        # Ensure the Vue HTML drops in the same folder as the Markdown index
+        vue_output_path = os.path.join(os.path.dirname(config.index_file), 'library_vue.html')
+        
+        if books_data:
+            build_html(books_data, vue_output_path)
             
-            if config.on_duplicate == 'replace':
-                logger.info(f"  Deleting old version and replacing with new...")
-                try:
-                    os.remove(destination)
-                except Exception as e:
-                    logger.error(f"  ❌ Error deleting old file: {e}")
-                    return False
-            else:
-                logger.info(f"  Skipping (on_duplicate='skip')")
-                return False
-        
-        logger.info(f"🚚 Moving audio file to: {destination}")
-        shutil.move(file_path, destination)
-        
-        # Move companion files
-        companion_extensions = {'.nfo', '.cue', '.jpg', '.jpeg', '.png', '.txt'}
-        
-        for comp_file in os.listdir(source_dir):
-            comp_path = os.path.join(source_dir, comp_file)
+            # --- SPEED METRIC ---
+            elapsed = time.time() - start_time
+            logger.info(f"   🌐 Updated MD & Vue.js indexes | Processing took: {elapsed:.2f} seconds")
             
-            if os.path.isfile(comp_path):
-                comp_ext = Path(comp_path).suffix.lower()
-                if comp_ext in companion_extensions:
-                    comp_dest = os.path.join(book_folder, comp_file)
-                    
-                    try:
-                        if os.path.exists(comp_dest):
-                            if config.on_duplicate == 'replace':
-                                os.remove(comp_dest)
-                            else:
-                                continue
-                                
-                        shutil.move(comp_path, comp_dest)
-                        logger.info(f"  📎 Moved companion file: {comp_file}")
-                    except Exception as e:
-                        logger.error(f"  ❌ Error moving companion {comp_file}: {e}")
-
-        # Clean up empty folder
-        if os.path.normpath(source_dir) != os.path.normpath(config.watch_directory):
-            if not os.listdir(source_dir): 
-                try:
-                    os.rmdir(source_dir)
-                    logger.info(f"  🗑️ Removed empty folder: {os.path.basename(source_dir)}")
-                except Exception as e:
-                    logger.debug(f"Could not remove folder {source_dir}: {e}")
-                    
-        # Update BOTH index files
-        try:
-            update_library_index(author, book_title, book_folder, destination, config.index_file)
-            base_html, _ = os.path.splitext(config.index_file)
-            logger.info(f"  📝 Updated indexes: .md and .html")
-        except Exception as e:
-            logger.error(f"  ❌ Error updating library index: {e}")
-                    
-        logger.info(f"✅ Successfully organized!")
-        return True
-        
     except Exception as e:
-        logger.error(f"❌ Error moving file: {e}")
-        return False
-
+        logger.error(f"   ❌ Error updating index files: {e}")
+                
+    logger.info(f"✅ Successfully organized!")
+    return True
 
 class AudiobookHandler(FileSystemEventHandler):
     """Handle new files appearing in the watched folder"""
     
-    def __init__(self, config: Config, logger: logging.Logger):
+    def __init__(self, config, logger):
         self.config = config
         self.logger = logger
         self.processed_files = set()
     
     def on_created(self, event):
-        if event.is_directory:
-            return
-        self._process_file(event.src_path)
+        # Ignore the folder creation; wait for the files inside!
+        if event.is_directory: return
+        self._process_file(os.fsdecode(event.src_path))
+        
+    def on_modified(self, event):
+        # 🛡️ THE FIX: Catch files that Windows missed during fast folder copies
+        if event.is_directory: return
+        self._process_file(os.fsdecode(event.src_path))
 
     def on_moved(self, event):
-        # This catches when a temporary file is renamed to the final .m4b
+        safe_dest = os.fsdecode(event.dest_path)
         if event.is_directory:
+            for root, _, files in os.walk(safe_dest):
+                for f in files:
+                    self._process_file(os.path.join(root, f))
             return
-        self._process_file(event.dest_path)
+        self._process_file(safe_dest)
         
     def _process_file(self, file_path):
-        # Ignore temporary files used during audio extraction/muxing
         filename = os.path.basename(file_path)
         if filename.startswith('temp') or filename.endswith('.tmp') or filename.endswith('.ff.txt'):
             return
@@ -410,6 +503,13 @@ class AudiobookHandler(FileSystemEventHandler):
             return
             
         self.processed_files.add(file_path)
+        
+        # 🛑 INTERCEPT MP3s: Let the user know we are waiting for the FFmpeg script!
+        if file_path.lower().endswith('.mp3'):
+            self.logger.info(f"⏸️ Ignored loose MP3 (Waiting for FFmpeg binder): {filename}")
+            return
+            
+        self.logger.info(f"👀 Watchdog caught: {filename}")
         organize_audiobook(file_path, self.config, self.logger)
 
 

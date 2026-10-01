@@ -45,7 +45,9 @@ def get_all_books(db_file: str) -> list:
             book['folder_uri'] = "file:" + urllib.request.pathname2url(os.path.abspath(book['folder_path']))
         
         # Handle cover art (falling back to empty if missing)
-        if book.get('cover_path') and os.path.exists(book['cover_path']):
+        # if book.get('cover_path') and os.path.exists(book['cover_path']):
+        # Handle cover art (trusting the database path for cloud streams)
+        if book.get('cover_path'):
             book['cover_uri'] = "file:" + urllib.request.pathname2url(os.path.abspath(book['cover_path']))
         else:
             book['cover_uri'] = ""
