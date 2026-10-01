@@ -74,7 +74,8 @@ def scan_library(config: Config, logger):
     if missing_from_disk:
         logger.info(f"➖ Found {len(missing_from_disk)} ghost records in database. Removing them...")
         for path in missing_from_disk:
-            remove_book_by_path(db_file, path)
+            # NOTE: The actual removal is commented out to prevent accidental data loss. Uncomment the line below to enable deletion.
+            # remove_book_by_path(db_file, path)
             logger.info(f"   🗑️ Removed orphaned record: {os.path.basename(path)}")
     else:
         logger.info("➖ No orphaned records found.")

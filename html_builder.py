@@ -8,6 +8,7 @@ for lightning-fast searching, sorting, and cover art display.
 import os
 import sqlite3
 import json
+from turtle import color
 import urllib.request
 import yaml
 
@@ -192,6 +193,7 @@ def build_html(books: list, output_file: str = "library_vue.html"):
         }}
         .btn-play {{ background-color: var(--accent); color: #000; }}
         .btn-folder {{ background-color: #444; color: white; border: 1px solid #555; }}
+        .btn-download {{ background-color: #3498db; color: white; border: 1px solid #2980b9; }}
         .empty-state {{
             grid-column: 1 / -1;
             text-align: center;
@@ -229,6 +231,7 @@ def build_html(books: list, output_file: str = "library_vue.html"):
                     <div class="buttons">
                         <a :href="book.file_uri" class="btn-play">▶ Play</a>
                         <a :href="book.folder_uri" class="btn-folder">📁 Folder</a>
+                        <a :href="book.file_uri" download class="btn-download">⬇️ Download</a>
                     </div>
                 </div>
             </div>

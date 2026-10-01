@@ -126,49 +126,99 @@ def sanitize_filename(name: str) -> str:
     return name
 
 
-def get_metadata(file_path: str, debug: bool = False) -> Tuple[Optional[str], Optional[str]]:
+def get_metadata(file_path: str, debug: bool = False) -> Tuple[Optional[str], Optional[str], bool]:
+    """Extract metadata from file, falling back to filename parsing if missing."""
+    needs_tagging = False
+    author = None
+    book_title = None
+    
+    try:
+        audio = MutagenFile(file_path)
+        
+        if audio is not None:
+            # 1. Try to read native MP4 tags
+            if isinstance(audio, MP4):
+                for tag in ['aART', '\xa9ART', '©ART']:
+                    if tag in audio:
+                        author = str(audio[tag][0] if isinstance(audio[tag], list) else audio[tag])
+                        break
+                for tag in ['\xa9alb', '©alb', '\xa9nam', '©nam']:
+                    if tag in audio:
+                        book_title = str(audio[tag][0] if isinstance(audio[tag], list) else audio[tag])
+                        break
+            
+            # 2. Try to read other tags (MP3, FLAC)
+            elif hasattr(audio, 'tags') and audio.tags:
+                for tag in ['albumartist', 'artist', 'ALBUMARTIST', 'ARTIST', 'TPE2', 'TPE1']:
+                    if tag in audio.tags:
+                        author = str(audio.tags[tag][0] if isinstance(audio.tags[tag], list) else audio.tags[tag])
+                        break
+                for tag in ['album', 'ALBUM', 'TALB']:
+                    if tag in audio.tags:
+                        book_title = str(audio.tags[tag][0] if isinstance(audio.tags[tag], list) else audio.tags[tag])
+                        break
+
+        # Clean up existing tags
+        if author: author = author.strip()
+        if book_title: book_title = book_title.strip()
+
+        # 3. FILENAME FALLBACK: If we are missing data, parse the filename
+        if not author or not book_title:
+            filename = Path(file_path).stem  # Gets the name without the extension
+            clean_name = filename.replace('_', ' ')
+            
+            # Look for "Author - Title" pattern
+            if " - " in clean_name:
+                parts = clean_name.split(" - ", 1)
+                if not author: author = parts[0].strip()
+                if not book_title: book_title = parts[1].strip()
+            elif "-" in clean_name:
+                parts = clean_name.split("-", 1)
+                if not author: author = parts[0].strip()
+                if not book_title: book_title = parts[1].strip()
+            else:
+                # Absolute fallback if there are no hyphens
+                if not book_title: book_title = clean_name.strip()
+                if not author: author = "Unknown Author"
+                
+            # Flag this file so the script knows it needs permanent fixing
+            needs_tagging = True
+            
+        return author, book_title, needs_tagging
+        
+    except Exception as e:
+        if debug: print(f"Error reading metadata: {e}")
+        return None, None, False
+
+def write_metadata(file_path: str, author: str, book_title: str, logger: logging.Logger) -> bool:
+    """Permanently burn author and title tags into the audio file."""
     try:
         audio = MutagenFile(file_path)
         if audio is None:
-            return None, None
-        
-        author, book_title = None, None
-        
+            return False
+            
         if isinstance(audio, MP4):
-            for tag in ['aART', '\xa9ART', '©ART']:
-                if tag in audio:
-                    value = audio[tag]
-                    author = str(value[0] if isinstance(value, list) else value)
-                    break
+            audio['\xa9ART'] = author  # Artist
+            audio['aART'] = author     # Album Artist (crucial for Apple devices)
+            audio['\xa9alb'] = book_title # Album/Book Title
+            audio.save()
+            logger.info(f"   🏷️ Burned MP4 tags -> Author: {author} | Title: {book_title}")
+            return True
             
-            for tag in ['\xa9alb', '©alb']:
-                if tag in audio:
-                    value = audio[tag]
-                    book_title = str(value[0] if isinstance(value, list) else value)
-                    break
+        elif file_path.lower().endswith('.mp3'):
+            from mutagen.easyid3 import EasyID3
+            tags = EasyID3(file_path)
+            tags['artist'] = author
+            tags['albumartist'] = author
+            tags['album'] = book_title
+            tags.save()
+            logger.info(f"   🏷️ Burned MP3 tags -> Author: {author} | Title: {book_title}")
+            return True
             
-            if not book_title:
-                for tag in ['\xa9nam', '©nam']:
-                    if tag in audio:
-                        value = audio[tag]
-                        book_title = str(value[0] if isinstance(value, list) else value)
-                        break
-        else:
-            if hasattr(audio, 'tags') and audio.tags:
-                for tag_name in ['albumartist', 'artist', 'ALBUMARTIST', 'ARTIST', 'TPE2', 'TPE1']:
-                    if tag_name in audio.tags:
-                        author = str(audio.tags[tag_name][0] if isinstance(audio.tags[tag_name], list) else audio.tags[tag_name])
-                        break
-                
-                for tag_name in ['album', 'ALBUM', 'TALB']:
-                    if tag_name in audio.tags:
-                        book_title = str(audio.tags[tag_name][0] if isinstance(audio.tags[tag_name], list) else audio.tags[tag_name])
-                        break
-        
-        return author.strip() if author else None, book_title.strip() if book_title else None
-        
-    except Exception:
-        return None, None
+        return False
+    except Exception as e:
+        logger.error(f"   ❌ Failed to write tags to {os.path.basename(file_path)}: {e}")
+        return False
 
 
 def get_target_drive(author_name: str, config: Config) -> Optional[str]:
@@ -188,11 +238,19 @@ def organize_audiobook(file_path: str, config: Config, logger: logging.Logger) -
     if Path(file_path).suffix.lower() not in config.audio_extensions:
         return False
     
-    author, book_title = get_metadata(file_path, debug=config.debug_metadata)
+    # Get metadata (Now expects 3 variables!)
+    author, book_title, needs_tagging = get_metadata(file_path, debug=config.debug_metadata)
     
     if not author or not book_title:
-        logger.warning(f"❌ Missing metadata - Author: {author}, Book: {book_title}")
+        logger.warning(f"❌ Missing metadata and couldn't parse filename for: {file_path}")
         return False
+    
+    logger.info(f"📖 Author: {author}")
+    logger.info(f"📕 Book: {book_title}")
+    
+    # NEW: Trigger the tag writer if we had to guess from the filename
+    if needs_tagging:
+        write_metadata(file_path, author, book_title, logger)
         
     target_drive = get_target_drive(author, config)
     if not target_drive or not os.path.exists(target_drive):
