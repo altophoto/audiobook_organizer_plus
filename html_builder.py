@@ -8,7 +8,6 @@ for lightning-fast searching, sorting, and cover art display.
 import os
 import sqlite3
 import json
-from turtle import color
 import urllib.request
 import yaml
 
